@@ -15,6 +15,9 @@ import scala.collection.mutable.ArrayBuffer
  */
 object SparkPMI {
     val inputPath = "/twitter/*/*.log"
+    val midOutputPath = "/output/twitter-mid"
+    val resultOutputPath = "/output/twitter-pmi"
+    val wordcountThreshold = 10
 
     def main(args: Array[String]): Unit = {
 
@@ -33,7 +36,7 @@ object SparkPMI {
         }).map(noun => (noun, 1)).reduceByKey((word1, word2) => word1 + word2)
         //Broadcast Counts of words for whole date
         val wholeWordcount = sparkContext.broadcast(wordcounts.collectAsMap())
-        println("WholeWordCount : "+wholeWordcount.value)
+        //        println("WholeWordCount : "+wholeWordcount.value)
 
         //Split date - nouns
         val jsonContents = sparkContext.textFile(inputPath).map(tweet => {
@@ -78,7 +81,6 @@ object SparkPMI {
         })
 
         val wordcountByDate = wordsByDate.map(date_word_tuple => ((date_word_tuple._1, date_word_tuple._2), 1)).reduceByKey((a, b) => a + b)
-        //        wordcountByDate.saveAsTextFile("/twitter-mid")
 
         //Broadcast
         wordcountByDate.persist()
@@ -88,21 +90,37 @@ object SparkPMI {
         val date_word_PMI = wordcountByDate.groupBy(data => data._1._1).flatMap(forEachDate => {
             val countOfWordsForCurrentDate = numOfTweetsForEachDate.value.apply(forEachDate._1) //Count of tweets for current date
             //((Date, Word), Count of Words in Date)
-            forEachDate._2.map(forEachWord => {
+            forEachDate._2.filter(forEachWord => wholeWordcount.value.apply(forEachWord._1._2) > wordcountThreshold).map(forEachWord => {
                 val px: Double = wholeWordcount.value.apply(forEachWord._1._2).toDouble / totalTweetCount.value.toDouble
                 val py: Double = countOfWordsForCurrentDate.toDouble / totalTweetCount.value.toDouble
                 val pxy: Double = forEachWord._2.toDouble / totalTweetCount.value.toDouble
                 val ixy: Double = scala.math.log(pxy / (px * py))
-                (forEachWord._1._1, forEachWord._1._2, ixy, "WC : "+wholeWordcount.value.apply(forEachWord._1._2))
+                (forEachWord._1._1, forEachWord._1._2, ixy, "AllOver : " + wholeWordcount.value.apply(forEachWord._1._2), "Current : " + forEachWord._2)
             })
         })
 
-//        date_word_PMI.saveAsTextFile("/twitter-mid")
+        date_word_PMI.saveAsTextFile(midOutputPath)
 
+
+        //Sort by PMI Value
         val sortedPMI = date_word_PMI.groupBy(pmi => pmi._1).flatMap(groupedByDate => {
             groupedByDate._2.toArray.sortBy(_._3)
         })
 
-        sortedPMI.saveAsTextFile("/twitter-mid")
+        //Calculate Average PMI
+        val averagePMI = sparkContext.broadcast(sortedPMI.groupBy(pmi => pmi._2).map(groupedPmiByWord => {
+            val average: Double = groupedPmiByWord._2.foldLeft(0.0)(_ + _._3) / groupedPmiByWord._2.size.toDouble
+            (groupedPmiByWord._1, average)
+        }).collectAsMap())
+
+        //Calculate Deviation
+        val resultPMI = date_word_PMI.map(pmi => {
+            //(Date, Word, PMI-deviation)
+            (pmi._1, pmi._2, pmi._3 - averagePMI.value.apply(pmi._2), pmi._4, pmi._5)
+        })
+
+        val sortedResult = resultPMI.groupBy(pmi => pmi._1).flatMap(groupedByDate => groupedByDate._2.toArray.sortBy(_._3))
+        //Generate Output
+        sortedResult.saveAsTextFile(resultOutputPath)
     }
 }
