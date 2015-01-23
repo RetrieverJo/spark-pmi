@@ -66,10 +66,10 @@ object SparkPMI {
         })
 
         //Group by Key(<Date,Word>)
-        val groupedByDate = jsonData.reduceByKey((pre, post) => pre + " " + post)
+        val wordsGroupedByDate = jsonData.reduceByKey((pre, post) => pre + " " + post)
 
         //Count by word
-        val wordsByDate = groupedByDate.flatMap((dateAndNouns) => {
+        val wordsByDate = wordsGroupedByDate.flatMap((dateAndNouns) => {
             val nounArray = new ArrayBuffer[(String, String)]()
             dateAndNouns._2.split(" ").foreach(noun => {
                 nounArray.prepend((dateAndNouns._1, noun))
@@ -92,11 +92,17 @@ object SparkPMI {
                 val px: Double = wholeWordcount.value.apply(forEachWord._1._2).toDouble / totalTweetCount.value.toDouble
                 val py: Double = countOfWordsForCurrentDate.toDouble / totalTweetCount.value.toDouble
                 val pxy: Double = forEachWord._2.toDouble / totalTweetCount.value.toDouble
-                val ixy: Double = pxy / (px * py)
-                (forEachWord._1._1, forEachWord._1._2, ixy)
+                val ixy: Double = scala.math.log(pxy / (px * py))
+                (forEachWord._1._1, forEachWord._1._2, ixy, "WC : "+wholeWordcount.value.apply(forEachWord._1._2))
             })
         })
 
-        date_word_PMI.saveAsTextFile("/twitter-mid")
+//        date_word_PMI.saveAsTextFile("/twitter-mid")
+
+        val sortedPMI = date_word_PMI.groupBy(pmi => pmi._1).flatMap(groupedByDate => {
+            groupedByDate._2.toArray.sortBy(_._3)
+        })
+
+        sortedPMI.saveAsTextFile("/twitter-mid")
     }
 }
